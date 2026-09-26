@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Timeline to GeoGuessr Converter</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            max-width: 600px;
+            margin: 40px auto;
+            padding: 20px;
+            line-height: 1.5;
+        }
+        .container {
+            border: 1px solid #ccc;
+            padding: 20px;
+            border-radius: 8px;
+            background: #f9f9f9;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-top: 15px;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        #status {
+            margin-top: 15px;
+            font-weight: bold;
+        }
+        .error { color: red; }
+        .success { color: green; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h2>Google Timeline to GeoGuessr</h2>
+        <p>Select your <code>Timeline.json</code> file. The conversion happens entirely in your browser; no data is uploaded.</p>
+        
+        <input type="file" id="fileInput" accept=".json">
+        <br>
+        <button id="convertBtn" disabled>Convert & Download</button>
+        
+        <div id="status"></div>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const convertBtn = document.getElementById('convertBtn');
+        const statusDiv = document.getElementById('status');
+
+        // Enable button only when a file is selected
+        fileInput.addEventListener('change', () => {
+            convertBtn.disabled = !fileInput.files.length;
+            statusDiv.textContent = '';
+        });
+
+        function parseLatLng(latLngStr) {
+            const [latStr, lngStr] = latLngStr.split(',');
+            return {
+                lat: parseFloat(latStr.replace('°', '').trim()),
+                lng: parseFloat(lngStr.replace('°', '').trim())
+            };
+        }
+
+        convertBtn.addEventListener('click', async () => {
+            const file = fileInput.files[0];
+            if (!file) return;
+
+            statusDiv.textContent = 'Reading and processing file... This might take a few seconds for large timelines.';
+            statusDiv.className = '';
+            convertBtn.disabled = true;
+
+            try {
+                // Read the file as text
+                const fileText = await file.text();
+                const timeline = JSON.parse(fileText);
+
+                const places = new Map();
+                const segments = timeline.semanticSegments || [];
+
+                for (const segment of segments) {
+                    const visit = segment.visit;
+                    
+                    if (!visit || (visit.hierarchyLevel !== undefined && visit.hierarchyLevel !== 0)) {
+                        continue;
+                    }
+
+                    const candidate = visit.topCandidate;
+                    if (!candidate) continue;
+
+                    const placeId = candidate.placeId;
+                    const locationStr = candidate.placeLocation?.latLng;
+                    if (!placeId || !locationStr) continue;
+
+                    const startTime = new Date(segment.startTime).getTime();
+                    const endTime = new Date(segment.endTime).getTime();
+                    const duration = endTime - startTime;
+
+                    const { lat, lng } = parseLatLng(locationStr);
+
+                    const existingPlace = places.get(placeId);
+                    if (!existingPlace) {
+                        places.set(placeId, {
+                            visits: 1,
+                            totalMs: duration,
+                            lastVisit: startTime,
+                            lat,
+                            lng
+                        });
+                    } else {
+                        existingPlace.visits += 1;
+                        existingPlace.totalMs += duration;
+                        
+                        if (startTime >= existingPlace.lastVisit) {
+                            existingPlace.lastVisit = startTime;
+                            existingPlace.lat = lat;
+                            existingPlace.lng = lng;
+                        }
+                    }
+                }
+
+                // Sort and format for GeoGuessr
+                const geoguessrLocations = Array.from(places.values())
+                    .sort((a, b) => {
+                        if (b.visits !== a.visits) return b.visits - a.visits;
+                        return b.totalMs - a.totalMs;
+                    })
+                    .map(place => ({ lat: place.lat, lng: place.lng }));
+
+                // Create a downloadable Blob
+                const blob = new Blob([JSON.stringify(geoguessrLocations, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                
+                // Trigger the download automatically
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'geoguessr_import.json';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url); // Clean up memory
+
+                statusDiv.textContent = `Success! Converted ${geoguessrLocations.length} unique locations. File downloaded.`;
+                statusDiv.className = 'success';
+
+            } catch (error) {
+                console.error(error);
+                statusDiv.textContent = `Error: ${error.message}. Make sure you selected a valid Google Timeline JSON file.`;
+                statusDiv.className = 'error';
+            } finally {
+                convertBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
